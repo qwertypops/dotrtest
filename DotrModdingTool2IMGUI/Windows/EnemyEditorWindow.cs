@@ -6,6 +6,7 @@ public class EnemyEditorWindow : IImGuiWindow
 {
     public MapEditorWindow MapEditorWindow;
     public DeckEditorWindow DeckEditorWindow;
+    public DraftingWindow DraftingWindow;
     public NameCalculatorWindow NameCalculatorWindow;
     public DestinyDrawEditorWindow DestinyDrawEditorWindow;
     
@@ -18,6 +19,7 @@ public class EnemyEditorWindow : IImGuiWindow
         
         MapEditorWindow = new MapEditorWindow(mapEditorFont);
         DeckEditorWindow = new DeckEditorWindow();
+        DraftingWindow = new DraftingWindow();
         NameCalculatorWindow = new NameCalculatorWindow();
         DestinyDrawEditorWindow = new DestinyDrawEditorWindow();
 
@@ -36,6 +38,11 @@ public class EnemyEditorWindow : IImGuiWindow
             if (ImGui.BeginTabItem("Deck Editor"))
             {
                 DeckEditorWindow.Render();
+                ImGui.EndTabItem();
+            }
+            if (ImGui.BeginTabItem("Drafting"))
+            {
+                DraftingWindow.Render();
                 ImGui.EndTabItem();
             }
             if (ImGui.BeginTabItem("Map Editor"))
