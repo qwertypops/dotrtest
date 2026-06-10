@@ -5,8 +5,16 @@ namespace DotrModdingTool2IMGUI;
 
 public class DraftingWindow : IImGuiWindow
 {
+    enum BudgetStatus
+    {
+        Good,
+        Tight,
+        Critical
+    }
+
+    static readonly int[] BudgetDeckIndices = { 28, 29, 37 };
     readonly Random random = new Random();
-    readonly CardConstant[] currentChoices = new CardConstant[3];
+    readonly CardConstant?[] currentChoices = new CardConstant?[3];
     string saveStatus = "";
 
     public Deck DraftDeck { get; } = new Deck();
@@ -23,7 +31,11 @@ public class DraftingWindow : IImGuiWindow
 
         ImGui.Text($"Draft deck: {DraftDeck.CardList.Count} / 40");
         ImGui.SameLine();
-        ImGui.Text($"Total DC {DraftDeck.DeckCost}");
+        ImGui.Text($"Total DC {DraftDeck.DeckCost} / {MaxDraftDeckCost}");
+        ImGui.SameLine();
+        ImGui.Text($"Remaining DC {RemainingDraftBudget}");
+        ImGui.SameLine();
+        ImGui.Text($"Budget {CurrentBudgetStatus}");
         ImGui.SameLine();
         if (ImGui.Button("Reset draft"))
         {
@@ -32,7 +44,7 @@ public class DraftingWindow : IImGuiWindow
             DrawNewChoices();
         }
         ImGui.SameLine();
-        if (DraftDeck.CardList.Count == 40)
+        if (DraftDeck.CardList.Count == 40 && IsDraftDeckUnderBudget)
         {
             if (ImGui.Button("Save over starter decks"))
             {
@@ -52,6 +64,12 @@ public class DraftingWindow : IImGuiWindow
         }
 
         ImGui.Separator();
+
+        if (DraftDeck.CardList.Count < 40 && currentChoices.All(choice => choice == null))
+        {
+            ImGui.Text("No legal cards can fit the remaining deck cost.");
+            return;
+        }
 
         float availableHeight = ImGui.GetContentRegionAvail().Y;
         float choicesHeight = Math.Min(260f, availableHeight * 0.45f);
@@ -76,7 +94,7 @@ public class DraftingWindow : IImGuiWindow
 
     void EnsureChoices()
     {
-        if (currentChoices.Any(choice => choice == null))
+        if (DraftDeck.CardList.Count < 40 && currentChoices.Any(choice => choice == null))
         {
             DrawNewChoices();
         }
@@ -84,25 +102,61 @@ public class DraftingWindow : IImGuiWindow
 
     void DrawNewChoices()
     {
-        List<CardConstant> availableCards = CardConstant.List
-            .Where(card => card.Index != 671)
+        List<CardConstant> availableCards = GetLegalNextCards()
             .ToList();
+
+        Array.Fill(currentChoices, null);
+
+        if (CurrentBudgetStatus == BudgetStatus.Critical)
+        {
+            List<CardConstant> budgetFriendlyCards = availableCards
+                .Where(card => card.DeckCost <= RemainingAverageDeckCost)
+                .ToList();
+
+            for (int i = 0; i < 2; i++)
+            {
+                CardConstant? budgetCard = DrawWeightedCard(budgetFriendlyCards);
+                if (budgetCard == null)
+                {
+                    break;
+                }
+
+                currentChoices[i] = budgetCard;
+                availableCards.Remove(budgetCard);
+            }
+        }
 
         for (int i = 0; i < currentChoices.Length; i++)
         {
-            int randomIndex = random.Next(availableCards.Count);
-            currentChoices[i] = availableCards[randomIndex];
-            availableCards.RemoveAt(randomIndex);
+            if (currentChoices[i] != null)
+            {
+                continue;
+            }
+
+            if (availableCards.Count == 0)
+            {
+                return;
+            }
+
+            currentChoices[i] = DrawWeightedCard(availableCards);
         }
     }
 
     void DrawChoice(int choiceIndex, float height)
     {
-        CardConstant card = currentChoices[choiceIndex];
+        CardConstant? card = currentChoices[choiceIndex];
         Vector2 choiceSize = new Vector2(ImGui.GetContentRegionAvail().X / (3 - choiceIndex), height);
 
         ImGui.PushID(choiceIndex);
         ImGui.BeginChild("DraftChoice", choiceSize, ImGuiChildFlags.Border | ImGuiChildFlags.AlwaysAutoResize);
+
+        if (card == null)
+        {
+            ImGui.Text("No legal card");
+            ImGui.EndChild();
+            ImGui.PopID();
+            return;
+        }
 
         ImGui.TextWrapped(card.Name.Current);
         ImGui.Text($"ATK {card.Attack} / DEF {card.Defense}");
@@ -122,7 +176,15 @@ public class DraftingWindow : IImGuiWindow
         else if (ImGui.Button("Choose", new Vector2(ImGui.GetContentRegionAvail().X, 0)))
         {
             DraftDeck.CardList.Add(new DeckCard(card, DeckLeaderRank.NCO));
-            DrawNewChoices();
+            saveStatus = "";
+            if (DraftDeck.CardList.Count < 40)
+            {
+                DrawNewChoices();
+            }
+            else
+            {
+                Array.Fill(currentChoices, null);
+            }
         }
 
         ImGui.EndChild();
@@ -197,6 +259,12 @@ public class DraftingWindow : IImGuiWindow
             return;
         }
 
+        if (!IsDraftDeckUnderBudget)
+        {
+            saveStatus = $"Draft deck must have less DC than Weevil, Rex, and Tea. Current: {DraftDeck.DeckCost}, max: {MaxDraftDeckCost}.";
+            return;
+        }
+
         for (int deckIndex = 0; deckIndex <= 16; deckIndex++)
         {
             Deck deck = Deck.DeckList[deckIndex];
@@ -209,5 +277,136 @@ public class DraftingWindow : IImGuiWindow
 
         UpdateStartingDeck.CreateNewStartingDeckData(Deck.DeckList);
         saveStatus = "Saved draft deck over starter decks 0-16.";
+    }
+
+    IEnumerable<CardConstant> GetLegalNextCards()
+    {
+        return DraftableCards.Where(CanFinishDeckAfterPicking);
+    }
+
+    CardConstant? DrawWeightedCard(List<CardConstant> cards)
+    {
+        if (cards.Count == 0)
+        {
+            return null;
+        }
+
+        double totalWeight = cards.Sum(GetCardWeight);
+        double roll = random.NextDouble() * totalWeight;
+
+        for (int i = 0; i < cards.Count; i++)
+        {
+            roll -= GetCardWeight(cards[i]);
+            if (roll <= 0)
+            {
+                CardConstant selectedCard = cards[i];
+                cards.RemoveAt(i);
+                return selectedCard;
+            }
+        }
+
+        CardConstant fallbackCard = cards[^1];
+        cards.RemoveAt(cards.Count - 1);
+        return fallbackCard;
+    }
+
+    double GetCardWeight(CardConstant card)
+    {
+        float remainingAverage = RemainingAverageDeckCost;
+        float overAverage = Math.Max(0, card.DeckCost - remainingAverage);
+        float underAverage = Math.Max(0, remainingAverage - card.DeckCost);
+
+        switch (CurrentBudgetStatus)
+        {
+            case BudgetStatus.Good:
+                return 1;
+            case BudgetStatus.Tight:
+                return Math.Max(1, 25 - overAverage * 1.5f + underAverage * 0.25f);
+            case BudgetStatus.Critical:
+                return Math.Max(1, 35 - overAverage * 4f + underAverage * 0.75f);
+            default:
+                return 1;
+        }
+    }
+
+    List<CardConstant> DraftableCards
+    {
+        get
+        {
+            return CardConstant.List
+                .Where(card => card.Index != 671)
+                .ToList();
+        }
+    }
+
+    bool CanFinishDeckAfterPicking(CardConstant card)
+    {
+        int cardsLeftAfterPick = 40 - DraftDeck.CardList.Count - 1;
+        int deckCostAfterPick = DraftDeck.DeckCost + card.DeckCost;
+
+        if (deckCostAfterPick > MaxDraftDeckCost)
+        {
+            return false;
+        }
+
+        int cheapestCardCost = DraftableCards.Min(cardConstant => cardConstant.DeckCost);
+        return deckCostAfterPick + cardsLeftAfterPick * cheapestCardCost <= MaxDraftDeckCost;
+    }
+
+    int MaxDraftDeckCost
+    {
+        get { return BudgetDeckIndices.Min(deckIndex => Deck.DeckList[deckIndex].DeckCost) - 1; }
+    }
+
+    int RemainingDraftBudget
+    {
+        get { return MaxDraftDeckCost - DraftDeck.DeckCost; }
+    }
+
+    float RemainingAverageDeckCost
+    {
+        get
+        {
+            int cardsLeft = 40 - DraftDeck.CardList.Count;
+            if (cardsLeft <= 0)
+            {
+                return 0;
+            }
+
+            return RemainingDraftBudget / (float)cardsLeft;
+        }
+    }
+
+    float TargetUsedDeckCost
+    {
+        get { return MaxDraftDeckCost * (DraftDeck.CardList.Count / 40f); }
+    }
+
+    float BudgetPressure
+    {
+        get { return DraftDeck.DeckCost - TargetUsedDeckCost; }
+    }
+
+    BudgetStatus CurrentBudgetStatus
+    {
+        get
+        {
+            if (BudgetPressure <= 30)
+            {
+                return BudgetStatus.Good;
+            }
+
+            if (BudgetPressure <= 80)
+            {
+                return BudgetStatus.Tight;
+            }
+
+            return BudgetStatus.Critical;
+        }
+    }
+
+    bool IsDraftDeckUnderBudget
+    {
+        get { return DraftDeck.DeckCost <= MaxDraftDeckCost; }
     }
 }
