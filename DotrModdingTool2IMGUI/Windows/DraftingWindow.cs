@@ -265,6 +265,12 @@ public class DraftingWindow : IImGuiWindow
             return;
         }
 
+        if (DraftDeck.CardList.Any(card => !IsDraftableCard(card.CardConstant)))
+        {
+            saveStatus = "Draft deck contains banned cards.";
+            return;
+        }
+
         for (int deckIndex = 0; deckIndex <= 16; deckIndex++)
         {
             Deck deck = Deck.DeckList[deckIndex];
@@ -334,9 +340,34 @@ public class DraftingWindow : IImGuiWindow
         get
         {
             return CardConstant.List
-                .Where(card => card.Index != 671)
+                .Where(IsDraftableCard)
                 .ToList();
         }
+    }
+
+    bool IsDraftableCard(CardConstant card)
+    {
+        if (card.Index == 671)
+        {
+            return false;
+        }
+
+        if (card.CardKind.Id == (byte)CardKind.CardKindEnum.Immortal)
+        {
+            return false;
+        }
+
+        if (card.DeckCost >= 60)
+        {
+            return false;
+        }
+
+        if (card.CardKind.isMonster() && (card.Attack > 2400 || card.Defense > 2400))
+        {
+            return false;
+        }
+
+        return true;
     }
 
     bool CanFinishDeckAfterPicking(CardConstant card)
